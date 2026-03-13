@@ -2,6 +2,9 @@
 
 > 伪装成code review面板的终端小说阅读器
 
+<img width="570" height="785" alt="image" src="https://github.com/user-attachments/assets/ea55d7c5-b5e2-43dc-a619-b9089e0741ec" />
+<img width="570" height="785" alt="image" src="https://github.com/user-attachments/assets/0cdeeb24-af5e-4185-8cd5-8c517f54f205" />
+
 ## Install
 
 ```bash
