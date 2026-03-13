@@ -127,9 +127,9 @@ export function ReadingView({
         exit();
       }
     } else if (input === 'j' || key.downArrow) {
-      reading.scrollDown(reading.getNextParagraphOffset());
+      reading.scrollDownParagraph();
     } else if (input === 'k' || key.upArrow) {
-      reading.scrollUp(reading.getPrevParagraphOffset());
+      reading.scrollUpParagraph();
     } else if (input === 'd') {
       reading.scrollDown(Math.floor(reading.visibleLines / 2));
     } else if (input === 'u') {
