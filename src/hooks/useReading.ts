@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import type { Chapter } from '../parser.js';
-import { wrapLines } from '../utils/text.js';
+import { wrapLines, type WrappedLine } from '../utils/text.js';
 import {
   loadProgress,
   saveProgress,
@@ -18,17 +18,48 @@ export interface UseReadingOptions {
 export interface UseReadingResult {
   readonly chapterIndex: number;
   readonly scrollLine: number;
-  readonly wrappedLines: ReturnType<typeof wrapLines>;
+  readonly wrappedLines: readonly WrappedLine[];
   readonly gutterWidth: number;
   readonly visibleLines: number;
   readonly totalLines: number;
   readonly maxScroll: number;
   readonly scrollDown: (delta: number) => void;
   readonly scrollUp: (delta: number) => void;
+  readonly scrollDownParagraph: () => void;
+  readonly scrollUpParagraph: () => void;
   readonly goToChapter: (index: number) => void;
-  readonly getNextParagraphOffset: () => number;
-  readonly getPrevParagraphOffset: () => number;
   readonly setScrollLine: React.Dispatch<React.SetStateAction<number>>;
+}
+
+// Find the next original-line boundary from a given position
+function findNextParagraphOffset(lines: readonly WrappedLine[], from: number): number {
+  for (let i = from + 1; i < lines.length; i++) {
+    if (!lines[i]?.isContinuation) {
+      return i - from;
+    }
+  }
+  // Already near the end — scroll remaining lines
+  const remaining = lines.length - from;
+  return remaining > 0 ? remaining : 1;
+}
+
+// Find the previous original-line boundary from a given position
+function findPrevParagraphOffset(lines: readonly WrappedLine[], from: number): number {
+  // First, skip to the start of the current original line
+  let i = from;
+  while (i > 0 && lines[i]?.isContinuation) {
+    i--;
+  }
+  // If we moved, that's the start of the current paragraph
+  if (i < from) {
+    return from - i;
+  }
+  // Already at a paragraph start — find the previous one
+  i = from - 1;
+  while (i > 0 && lines[i]?.isContinuation) {
+    i--;
+  }
+  return from - Math.max(0, i);
 }
 
 export function useReading({
@@ -40,21 +71,7 @@ export function useReading({
 }: UseReadingOptions): UseReadingResult {
   const saved = filePath ? loadProgress(filePath) : null;
 
-  // Skip trivial preamble (e.g. garbled book title) when no saved progress
-  const defaultChapter = (() => {
-    if (chapters.length > 1) {
-      const first = chapters[0];
-      if (first && first.title === '前言') {
-        const nonEmpty = first.lines.filter((l) => l.trim().length > 0);
-        if (nonEmpty.length <= 3) {
-          return 1; // skip trivial preamble
-        }
-      }
-    }
-    return 0;
-  })();
-
-  const [chapterIndex, setChapterIndex] = useState(initialChapter ?? saved?.chapter ?? defaultChapter);
+  const [chapterIndex, setChapterIndex] = useState(initialChapter ?? saved?.chapter ?? 0);
   const [scrollLine, setScrollLine] = useState(initialChapter !== undefined ? 0 : (saved?.scrollLine ?? 0));
 
   const chapter = chapters[chapterIndex];
@@ -64,7 +81,12 @@ export function useReading({
   const gutterWidth = Math.max(3, String(maxOriginalLineNum).length);
   const contentWidth = Math.max(10, screenWidth - gutterWidth - 4);
 
-  const wrappedLines = chapter ? wrapLines(chapter.lines, contentWidth) : [];
+  // Memoize wrapping to ensure stable identity across renders
+  const wrappedLines = useMemo(
+    () => (chapter ? wrapLines(chapter.lines, contentWidth) : []),
+    [chapter, contentWidth],
+  );
+
   const totalLines = wrappedLines.length;
   const maxScroll = Math.max(0, totalLines - visibleLines);
 
@@ -141,24 +163,57 @@ export function useReading({
     });
   };
 
-  const getNextParagraphOffset = () => {
-    if (wrappedLines.length === 0) return 3;
-    for (let i = scrollLine + 1; i < wrappedLines.length; i++) {
-      if (!wrappedLines[i]?.isContinuation) {
-        return i - scrollLine;
+  // Paragraph-aware scroll: compute offset inside the callback using `prev`
+  const scrollDownParagraph = () => {
+    setScrollLine((prev) => {
+      const delta = findNextParagraphOffset(wrappedLines, prev);
+      const next = clampScroll(prev + delta);
+      if (prev >= maxScroll && next >= maxScroll && maxScroll > 0) {
+        if (lastBoundary.current === 'bottom') {
+          boundaryHits.current += 1;
+        } else {
+          lastBoundary.current = 'bottom';
+          boundaryHits.current = 1;
+        }
+        if (boundaryHits.current >= 2 && chapterIndex < chapters.length - 1) {
+          boundaryHits.current = 0;
+          lastBoundary.current = null;
+          goToChapter(chapterIndex + 1);
+          return 0;
+        }
+      } else {
+        boundaryHits.current = 0;
+        lastBoundary.current = null;
       }
-    }
-    return 3;
+      persistProgress(chapterIndex, next, filePath);
+      return next;
+    });
   };
 
-  const getPrevParagraphOffset = () => {
-    if (wrappedLines.length === 0) return 3;
-    for (let i = Math.min(scrollLine - 1, wrappedLines.length - 1); i >= 0; i--) {
-      if (!wrappedLines[i]?.isContinuation) {
-        return scrollLine - i;
+  const scrollUpParagraph = () => {
+    setScrollLine((prev) => {
+      const delta = findPrevParagraphOffset(wrappedLines, prev);
+      const next = clampScroll(prev - delta);
+      if (prev <= 0 && next <= 0) {
+        if (lastBoundary.current === 'top') {
+          boundaryHits.current += 1;
+        } else {
+          lastBoundary.current = 'top';
+          boundaryHits.current = 1;
+        }
+        if (boundaryHits.current >= 2 && chapterIndex > 0) {
+          boundaryHits.current = 0;
+          lastBoundary.current = null;
+          goToChapter(chapterIndex - 1);
+          return 0;
+        }
+      } else {
+        boundaryHits.current = 0;
+        lastBoundary.current = null;
       }
-    }
-    return 3;
+      persistProgress(chapterIndex, next, filePath);
+      return next;
+    });
   };
 
   return {
@@ -171,9 +226,9 @@ export function useReading({
     maxScroll,
     scrollDown,
     scrollUp,
+    scrollDownParagraph,
+    scrollUpParagraph,
     goToChapter,
-    getNextParagraphOffset,
-    getPrevParagraphOffset,
     setScrollLine,
   };
 }
